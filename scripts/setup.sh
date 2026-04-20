@@ -119,6 +119,10 @@ mkdir -p "$TARGET_DIR/scripts"
 if [[ -f "$SKILL_DIR/scripts/redact_hermes.py" ]]; then
   cp "$SKILL_DIR/scripts/redact_hermes.py" "$TARGET_DIR/scripts/redact_hermes.py"
 fi
+if [[ -f "$SKILL_DIR/scripts/session_hygiene.sh" ]]; then
+  cp "$SKILL_DIR/scripts/session_hygiene.sh" "$TARGET_DIR/scripts/session_hygiene.sh"
+  chmod +x "$TARGET_DIR/scripts/session_hygiene.sh"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 5: create local SECRETS.md (gitignored, stores secret inventory)
@@ -163,6 +167,9 @@ fi
 if [[ -f "$TARGET_DIR/scripts/redact_hermes.py" ]]; then
   chmod +x "$TARGET_DIR/scripts/redact_hermes.py"
 fi
+if [[ -f "$TARGET_DIR/scripts/session_hygiene.sh" ]]; then
+  chmod +x "$TARGET_DIR/scripts/session_hygiene.sh"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 8: sanity check
@@ -176,6 +183,7 @@ echo ""
 echo "  Skill location:  $TARGET_DIR"
 echo "  Secrets file:    $TARGET_DIR/SECRETS.md"
 echo "  Redact script:   $TARGET_DIR/scripts/redact_hermes.py"
+echo "  Session helper:  $TARGET_DIR/scripts/session_hygiene.sh"
 echo ""
 echo "Next steps:"
 echo "  1. Optional: edit $TARGET_DIR/SECRETS.md with placeholder labels only"
