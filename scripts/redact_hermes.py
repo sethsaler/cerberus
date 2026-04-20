@@ -8,14 +8,20 @@ Usage:
     Or with named pairs:
     python3 redact_hermes.py \
         --secret "openai:sk-...ABC" \
-        --secret "replicate:r8_...XYZ" \
-        --secret "agentmail:am_us_..."
+        --secret "replicate:r8_...XYZ"
 
     Interactive (will prompt for secrets):
-    python3 redact_hermes.py --interactive
+        python3 redact_hermes.py --interactive
+
+    Recommended (avoids shell history / argv exposure):
+        printf '%s\n' 'sk-abc...:***OPENAI_REDACTED***' | python3 redact_hermes.py --from-stdin
+        python3 redact_hermes.py --secrets-file /path/to/pairs.txt
 
     Audit mode (find secrets without modifying):
-    python3 redact_hermes.py --audit --secrets "..."
+        python3 redact_hermes.py --audit --secrets "..."
+
+    Verify mode (exit 1 if any secret still present — CI / post-session checks):
+        python3 redact_hermes.py --verify --secrets "..."
 
 Examples:
     # Single secret
@@ -24,13 +30,14 @@ Examples:
     # Multiple secrets
     python3 redact_hermes.py \
         --secret "sk-...:***OPENAI_KEY_REDACTED***" \
-        --secret "r8_...:***REPLICATE_KEY_REDACTED***" \
-        --secret "am_us_...:***AGENTMAIL_KEY_REDACTED***"
+        --secret "r8_...:***REPLICATE_KEY_REDACTED***"
 
     # Full cleanup of known secrets (add your own):
     python3 redact_hermes.py \
         --secret "YOUR_KEY_HERE:***YOUR_SERVICE_REDACTED***"
 """
+
+from __future__ import annotations
 
 import argparse
 import os
@@ -48,8 +55,13 @@ HERMES_DIR = os.path.expanduser("~/.hermes")
 # Core redaction logic
 # ---------------------------------------------------------------------------
 
-def redact_file(path: str, secrets: dict[str, str], verbose: bool = True) -> int:
-    """Replace all secret occurrences in a plain text file. Returns count of replacements."""
+def redact_file(
+    path: str,
+    secrets: dict[str, str],
+    verbose: bool = True,
+    dry_run: bool = False,
+) -> int:
+    """Replace all secret occurrences in a plain text file. Returns 1 if modified (or would be)."""
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
@@ -58,26 +70,36 @@ def redact_file(path: str, secrets: dict[str, str], verbose: bool = True) -> int
 
     original = content
     for secret, placeholder in secrets.items():
-        # Only replace if the secret is long enough to be real (avoid placeholder-in-placeholder loops)
         if len(secret) > 8 and secret in content:
             content = content.replace(secret, placeholder)
 
     if content != original:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        count = sum(1 for s in secrets if len(s) > 8 and s in original)
+        if not dry_run:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
         if verbose:
-            print(f"  ✓  {path}  ({count} replacement{'s' if count != 1 else ''})")
+            tag = "would update" if dry_run else "✓"
+            print(f"  {tag}  {path}")
         return 1
     return 0
 
 
-def redact_json_file(path: str, secrets: dict[str, str], verbose: bool = True) -> int:
+def redact_json_file(
+    path: str,
+    secrets: dict[str, str],
+    verbose: bool = True,
+    dry_run: bool = False,
+) -> int:
     """Replace all secret occurrences in a .json file (session files, dumps, etc.)."""
-    return redact_file(path, secrets, verbose)
+    return redact_file(path, secrets, verbose, dry_run)
 
 
-def redact_sqlite_db(db_path: str, secrets: dict[str, str], verbose: bool = True) -> int:
+def redact_sqlite_db(
+    db_path: str,
+    secrets: dict[str, str],
+    verbose: bool = True,
+    dry_run: bool = False,
+) -> int:
     """
     Redact secrets from a SQLite database (state.db).
     Backs up the DB before modifying, then walks every text column in every
@@ -87,6 +109,10 @@ def redact_sqlite_db(db_path: str, secrets: dict[str, str], verbose: bool = True
         return 0
 
     backup_path = f"{db_path}.bak.{int(time.time())}"
+
+    if dry_run:
+        return _sqlite_redact_dry_run(db_path, secrets, verbose)
+
     shutil.copy2(db_path, backup_path)
 
     files_modified = 0
@@ -94,22 +120,27 @@ def redact_sqlite_db(db_path: str, secrets: dict[str, str], verbose: bool = True
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # Get all table names
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [row[0] for row in cursor.fetchall()]
 
         for table in tables:
             try:
-                # Get column names and types
                 cursor.execute(f"PRAGMA table_info({table})")
-                columns = [(row[1], row[2]) for row in cursor.fetchall()]  # (name, type)
+                columns = [(row[1], row[2]) for row in cursor.fetchall()]
 
-                text_cols = [name for name, dtype in columns
-                             if dtype in ("TEXT", "BLOB", "ANY") or "CHAR" in dtype.upper() or "STR" in dtype.upper()]
+                text_cols = [
+                    name
+                    for name, dtype in columns
+                    if dtype in ("TEXT", "BLOB", "ANY")
+                    or "CHAR" in dtype.upper()
+                    or "STR" in dtype.upper()
+                ]
 
                 for col in text_cols:
                     try:
-                        cursor.execute(f"SELECT rowid, {col} FROM {table} WHERE {col} IS NOT NULL")
+                        cursor.execute(
+                            f"SELECT rowid, {col} FROM {table} WHERE {col} IS NOT NULL"
+                        )
                         for rowid, value in cursor.fetchall():
                             if not isinstance(value, str):
                                 continue
@@ -120,12 +151,15 @@ def redact_sqlite_db(db_path: str, secrets: dict[str, str], verbose: bool = True
                                     new_value = new_value.replace(secret, placeholder)
                                     changed = True
                             if changed:
-                                cursor.execute(f"UPDATE {table} SET {col} = ? WHERE rowid = ?", (new_value, rowid))
+                                cursor.execute(
+                                    f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
+                                    (new_value, rowid),
+                                )
                     except sqlite3.Error:
-                        pass  # Skip columns that can't be read/written
+                        pass
 
             except sqlite3.Error:
-                pass  # Skip tables that cause issues
+                pass
 
         conn.commit()
         conn.close()
@@ -134,13 +168,14 @@ def redact_sqlite_db(db_path: str, secrets: dict[str, str], verbose: bool = True
             print(f"  ✓  {db_path}  (SQLite — backup: {os.path.basename(backup_path)})")
 
     except Exception as e:
-        # Restore from backup on failure
         if os.path.exists(backup_path):
             shutil.move(backup_path, db_path)
-        print(f"  ✗  {db_path} — error: {e}  (restored from backup)", file=sys.stderr)
+        print(
+            f"  ✗  {db_path} — error: {e}  (restored from backup)",
+            file=sys.stderr,
+        )
         return 0
     finally:
-        # Remove old backup on success
         if files_modified and os.path.exists(backup_path):
             try:
                 os.remove(backup_path)
@@ -150,26 +185,72 @@ def redact_sqlite_db(db_path: str, secrets: dict[str, str], verbose: bool = True
     return files_modified
 
 
+def _sqlite_redact_dry_run(db_path: str, secrets: dict[str, str], verbose: bool) -> int:
+    """Count whether any secret appears in the DB without writing."""
+    uri = f"file:{db_path}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return 0
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = [row[0] for row in cursor.fetchall()]
+    found = False
+    for table in tables:
+        try:
+            cursor.execute(f"PRAGMA table_info({table})")
+            columns = [(row[1], row[2]) for row in cursor.fetchall()]
+            text_cols = [
+                name
+                for name, dtype in columns
+                if dtype in ("TEXT", "BLOB", "ANY")
+                or "CHAR" in dtype.upper()
+                or "STR" in dtype.upper()
+            ]
+            for col in text_cols:
+                try:
+                    cursor.execute(
+                        f"SELECT {col} FROM {table} WHERE {col} IS NOT NULL"
+                    )
+                    for (value,) in cursor.fetchall():
+                        if not isinstance(value, str):
+                            continue
+                        for secret in secrets:
+                            if len(secret) > 8 and secret in value:
+                                found = True
+                                break
+                        if found:
+                            break
+                except sqlite3.Error:
+                    pass
+            if found:
+                break
+        except sqlite3.Error:
+            pass
+    conn.close()
+    if found and verbose:
+        print(f"  [dry-run] would update  {db_path}  (SQLite)")
+    return 1 if found else 0
+
+
 def audit_hermes(secrets: dict[str, str], hermes_dir: str = HERMES_DIR) -> dict:
     """
     Scan hermes storage and report where secrets are found (without modifying anything).
     Returns {path: [found_secrets_list]}.
     """
-    findings = {}
+    findings: dict[str, list[str]] = {}
     for root, dirs, files in os.walk(hermes_dir):
-        # Skip .git directories
         dirs[:] = [d for d in dirs if d != ".git"]
 
         for fn in files:
             fp = os.path.join(root, fn)
-            found_in_file = []
+            found_in_file: list[str] = []
 
             try:
                 if fn.endswith(".json"):
                     with open(fp, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                 elif fn.endswith(".db"):
-                    # Quick binary scan for secrets — just search the whole file as bytes
                     with open(fp, "rb") as f:
                         content = f.read().decode("utf-8", errors="ignore")
                 else:
@@ -189,49 +270,13 @@ def audit_hermes(secrets: dict[str, str], hermes_dir: str = HERMES_DIR) -> dict:
     return findings
 
 
-# ---------------------------------------------------------------------------
-# Scanning and dispatch
-# ---------------------------------------------------------------------------
-
-def scan_and_redact(secrets: dict[str, str], hermes_dir: str = HERMES_DIR, dry_run: bool = False) -> dict:
-    """
-    Walk hermes_dir and redact secrets from all relevant files.
-    Returns {"files_scanned": N, "files_modified": M, "errors": []}.
-    """
-    stats = {"files_scanned": 0, "files_modified": 0, "errors": []}
-
-    for root, dirs, files in os.walk(hermes_dir):
-        # Skip .git directories
-        dirs[:] = [d for d in dirs if d != ".git"]
-
-        for fn in files:
-            fp = os.path.join(root, fn)
-            stats["files_scanned"] += 1
-
-            try:
-                if fn in (".hermes_history", "transcript.txt", "memory.json"):
-                    # Plain text / line-delimited history
-                    files_modified += redact_file(fp, secrets)
-
-                elif fn.endswith(".json") or fn.endswith(".jsonl"):
-                    files_modified += redact_json_file(fp, secrets)
-
-                elif fn == "state.db":
-                    files_modified += redact_sqlite_db(fp, secrets)
-
-                else:
-                    # Treat everything else as plain text
-                    files_modified += redact_file(fp, secrets)
-
-            except Exception as e:
-                stats["errors"].append(f"{fp}: {e}")
-
-    return stats
-
-
-# Fix the scoping issue in scan_and_redact
-def _scan_and_redact_impl(secrets: dict, hermes_dir: str, dry_run: bool):
-    stats = {"files_scanned": 0, "files_modified": 0, "errors": []}
+def scan_and_redact(
+    secrets: dict[str, str],
+    hermes_dir: str = HERMES_DIR,
+    dry_run: bool = False,
+) -> dict:
+    """Walk hermes_dir and redact secrets from all relevant files."""
+    stats: dict = {"files_scanned": 0, "files_modified": 0, "errors": []}
 
     for root, dirs, files in os.walk(hermes_dir):
         dirs[:] = [d for d in dirs if d != ".git"]
@@ -240,13 +285,17 @@ def _scan_and_redact_impl(secrets: dict, hermes_dir: str, dry_run: bool):
             stats["files_scanned"] += 1
             try:
                 if fn in (".hermes_history", "transcript.txt", "memory.json"):
-                    stats["files_modified"] += redact_file(fp, secrets)
+                    stats["files_modified"] += redact_file(fp, secrets, dry_run=dry_run)
                 elif fn.endswith(".json") or fn.endswith(".jsonl"):
-                    stats["files_modified"] += redact_json_file(fp, secrets)
+                    stats["files_modified"] += redact_json_file(
+                        fp, secrets, dry_run=dry_run
+                    )
                 elif fn == "state.db":
-                    stats["files_modified"] += redact_sqlite_db(fp, secrets)
+                    stats["files_modified"] += redact_sqlite_db(
+                        fp, secrets, dry_run=dry_run
+                    )
                 else:
-                    stats["files_modified"] += redact_file(fp, secrets)
+                    stats["files_modified"] += redact_file(fp, secrets, dry_run=dry_run)
             except Exception as e:
                 stats["errors"].append(f"{fp}: {e}")
 
@@ -259,11 +308,10 @@ def _scan_and_redact_impl(secrets: dict, hermes_dir: str, dry_run: bool):
 
 def parse_secrets_input(raw: str) -> dict[str, str]:
     """
-    Parse "secret1:value1,secret2:value2,..." into {secret: placeholder}.
-    Also handles named --secret arguments already split.
+    Parse "secret1:value1,secret2:value2,..." or line-based pairs into {secret: placeholder}.
     """
-    secrets = {}
-    for item in raw.split(","):
+    secrets: dict[str, str] = {}
+    for item in re.split(r"[\n,]+", raw.strip()):
         item = item.strip()
         if not item or ":" not in item:
             continue
@@ -275,12 +323,24 @@ def parse_secrets_input(raw: str) -> dict[str, str]:
     return secrets
 
 
+def load_secrets_file(path: str) -> dict[str, str]:
+    """Load secret:placeholder pairs from a UTF-8 file (one pair per line; # comments OK)."""
+    secrets: dict[str, str] = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            secrets.update(parse_secrets_input(line))
+    return secrets
+
+
 def interactive_prompt() -> dict[str, str]:
     """Prompt the user for secret -> placeholder pairs interactively."""
-    secrets = {}
+    secrets: dict[str, str] = {}
     print("\n=== Interactive Secret Entry ===")
     print("Enter each secret followed by its placeholder label.")
-    print("Press Ctrl+C to finish.\n")
+    print("Press Ctrl+C or ENTER on empty secret to finish.\n")
     while True:
         try:
             line = input("Secret (or ENTER to finish): ").strip()
@@ -295,15 +355,21 @@ def interactive_prompt() -> dict[str, str]:
     return secrets
 
 
-def main():
+def merge_secrets(base: dict[str, str], extra: dict[str, str]) -> None:
+    """Merge extra into base (extra overwrites duplicate keys)."""
+    base.update(extra)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Redact secrets from Hermes Agent storage files.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     parser.add_argument(
-        "--secrets", "-s",
-        help='Comma-separated "secret:placeholder" pairs, e.g. "sk-ABC:***OPENAI_REDACTED***"',
+        "--secrets",
+        "-s",
+        help='Comma- or newline-separated "secret:placeholder" pairs',
     )
     parser.add_argument(
         "--secret",
@@ -312,19 +378,39 @@ def main():
         help='Single "secret:placeholder" pair. Repeat for multiple secrets.',
     )
     parser.add_argument(
-        "--interactive", "-i",
+        "--secrets-file",
+        "-f",
+        metavar="PATH",
+        help="Read pairs from a file (one secret:placeholder per line; avoids argv exposure).",
+    )
+    parser.add_argument(
+        "--from-stdin",
+        action="store_true",
+        help="Read pairs from stdin (recommended for piping; same format as --secrets-file).",
+    )
+    parser.add_argument(
+        "--interactive",
+        "-i",
         action="store_true",
         help="Interactively enter secrets and placeholders",
     )
     parser.add_argument(
-        "--dry-run", "-n",
+        "--dry-run",
+        "-n",
         action="store_true",
-        help="Audit only — show what would be changed without modifying files",
+        help="Show what would be changed without modifying files",
     )
     parser.add_argument(
-        "--audit", "-a",
+        "--audit",
+        "-a",
         action="store_true",
         help="Show which files contain which secrets (no modifications)",
+    )
+    parser.add_argument(
+        "--verify",
+        "-V",
+        action="store_true",
+        help="Exit with status 1 if any secret is still present (audit-only)",
     )
     parser.add_argument(
         "--hermes-dir",
@@ -334,32 +420,56 @@ def main():
 
     args = parser.parse_args()
 
-    # Collect secrets from all sources
-    secrets = {}
+    secrets: dict[str, str] = {}
+
+    if args.secrets_file:
+        merge_secrets(secrets, load_secrets_file(args.secrets_file))
+
+    if args.from_stdin:
+        stdin_text = sys.stdin.read()
+        merge_secrets(secrets, parse_secrets_input(stdin_text))
 
     if args.secrets:
-        secrets.update(parse_secrets_input(args.secrets))
+        merge_secrets(secrets, parse_secrets_input(args.secrets))
 
     if args.secret_list:
         for item in args.secret_list:
-            secrets.update(parse_secrets_input(item))
+            merge_secrets(secrets, parse_secrets_input(item))
 
     if args.interactive:
-        secrets.update(interactive_prompt())
+        merge_secrets(secrets, interactive_prompt())
 
     if not secrets:
-        print("Error: No secrets provided. Use --secrets, --secret, or --interactive.", file=sys.stderr)
+        print(
+            "Error: No secrets provided. Use --secrets-file, --from-stdin, --secrets, --secret, or --interactive.",
+            file=sys.stderr,
+        )
         parser.print_help()
         sys.exit(1)
 
-    # Validate: warn if any placeholder already appears in its corresponding secret
     for secret, placeholder in secrets.items():
         if len(secret) > 8 and placeholder in secret:
-            print(f"WARNING: placeholder '{placeholder}' appears inside its own secret — may cause nested redaction.", file=sys.stderr)
+            print(
+                f"WARNING: placeholder '{placeholder}' appears inside its own secret — may cause nested redaction.",
+                file=sys.stderr,
+            )
 
-    print(f"\n{'[DRY-RUN] ' if args.dry_run else ''}{'Scanning' if args.audit else 'Redacting'} {len(secrets)} secret(s) in {args.hermes_dir}...\n")
+    if args.verify:
+        print(f"\nVerifying {len(secrets)} secret(s) in {args.hermes_dir}...\n")
+        findings = audit_hermes(secrets, args.hermes_dir)
+        if not findings:
+            print("  OK — no tracked secrets found in Hermes storage.")
+            sys.exit(0)
+        for fp, found in findings.items():
+            rel = fp.replace(os.path.expanduser("~"), "~")
+            print(f"  FAIL  {rel}")
+            for s in found:
+                print(f"        → {s}")
+        print(f"\n  {len(findings)} file(s) still contain secret material.")
+        sys.exit(1)
 
     if args.audit:
+        print(f"\nScanning {len(secrets)} secret(s) in {args.hermes_dir}...\n")
         findings = audit_hermes(secrets, args.hermes_dir)
         if not findings:
             print("  No secrets found.")
@@ -370,14 +480,19 @@ def main():
                 for s in found:
                     print(f"       → {s}")
         print(f"\n  {len(findings)} file(s) contain secrets.")
-        return
+        sys.exit(0)
+
+    prefix = "[DRY-RUN] " if args.dry_run else ""
+    print(
+        f"\n{prefix}Redacting {len(secrets)} secret(s) in {args.hermes_dir}...\n"
+    )
 
     if args.dry_run:
         print("  (Dry run — no files will be modified)\n")
 
-    stats = _scan_and_redact_impl(secrets, args.hermes_dir, args.dry_run)
+    stats = scan_and_redact(secrets, args.hermes_dir, dry_run=args.dry_run)
 
-    print(f"\n{'  Done.' if args.dry_run else ''}")
+    print(f"\n  {'Planned changes (dry run).' if args.dry_run else 'Done.'}")
     print(f"  Files scanned:  {stats['files_scanned']}")
     print(f"  Files modified: {stats['files_modified']}")
     if stats["errors"]:

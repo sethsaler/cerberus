@@ -16,6 +16,26 @@ Load this skill **automatically** whenever the user shares any of the following:
 
 ---
 
+## Threat model (what this skill does and does not do)
+
+**In scope:** Limit exposure of **plaintext secrets in local Hermes storage** (history, session JSON, SQLite `state.db`, transcripts) by redacting known values and guiding safer handling.
+
+**Out of scope / not guaranteed:**
+
+- **Breach recovery:** If a secret was ever written to disk, backups, sync folders, IDE local history, or logs, **assume it may still exist somewhere**. Redaction reduces risk on the primary paths; it does not prove erasure everywhere.
+- **Platform security:** "Agent memory" or vendor encryption is a **trust boundary**, not a substitute for a secrets manager. If the threat includes compromised accounts or hosts, prefer **vaults, OIDC/workload identity, and short-lived tokens**.
+- **Perfect detection:** Regex patterns miss novel formats; treat pattern lists as **best-effort** and extend them as your stack changes.
+
+---
+
+## Default stance (prefer this order)
+
+1. **No raw secrets in chat** — use env vars, `op run`, cloud IAM, or files outside the repo that tools read at runtime.
+2. **If a secret was pasted** — redact from Hermes storage immediately, then **rotate** the credential at the provider if exposure is plausible (see checklist below).
+3. **Inventory** — `SECRETS.md` should list **labels and placeholders only**, not live values. Never commit it.
+
+---
+
 ## Sensitive Patterns to Guard
 
 ```python
@@ -50,30 +70,45 @@ When a sensitive value is detected in the user's message, extract it and identif
 
 ### Step 2 — Redact from Disk (IMMEDIATE)
 
-Run the redaction script against all hermes storage locations:
+Run the redaction script against all Hermes storage locations.
+
+**Prefer inputs that avoid shell history and process listings:**
 
 ```bash
+# Recommended: pipe pairs (stdin), or use --secrets-file with chmod 600
+printf '%s\n' 'sk-abc...:***OPENAI_KEY_REDACTED***' | python3 scripts/redact_hermes.py --from-stdin
+```
+
+```bash
+python3 scripts/redact_hermes.py --secrets-file /path/to/pairs.txt
+```
+
+Avoid putting live secrets in argv when possible (`--secrets "..."` is visible in `/proc` and may be logged).
+
+```bash
+# Fallback (less ideal): comma-separated on the command line
 python3 scripts/redact_hermes.py --secrets "key1:value1,key2:value2,..."
 ```
 
-Known secrets can be found in `~/.hermes/skills/security/cerberus/SECRETS.md` (gitignored). The script replaces each plaintext value with `***{TYPE}_REDACTED***`.
+Known labels can be tracked in `~/.hermes/skills/security/cerberus/SECRETS.md` (**placeholders only**, gitignored). The script replaces each plaintext value with `***{TYPE}_REDACTED***`.
 
 **Never leave the plaintext value in any file.**
 
-### Step 3 — Memory Only
+### Step 3 — Memory: metadata only
 
-Save the credential to **agent memory only** (using the `memory` tool under `target=memory`). Do NOT save to skill files, config files, session transcripts, or any disk location.
+Do **not** store the real secret value in agent memory. If the user needs a reminder, store only:
 
-If the user says "I need you to remember this key for later use":
-1. Confirm the key was received
-2. Immediately redact from wherever it was shared
-3. Store label + `***REDACTED***` placeholder in memory (not the real value)
+- Service name / purpose
+- Placeholder label (e.g. `***OPENAI_KEY_REDACTED***`)
+- Optional: last 4 characters for confirmation (`...xyz1`)
+
+If the user says "remember this key for later use", explain that **remembering the actual key in memory is unsafe**; they should use a secrets manager or env injection and only share non-secret handles with the agent.
 
 ### Step 4 — Warn on Risky Patterns
 
 If the user pastes a raw key into chat without any context or warning, respond with:
 
-> "I see you've shared an API key. I'll redact it from disk immediately and only store it in encrypted memory. For future use, you can share it via a secrets manager or direct file — just say the word and I'll handle it securely without it touching session history."
+> "I see you've shared an API key. I'll redact it from Hermes storage immediately. For future use, inject secrets via env vars or a vault (`op run`, cloud IAM) so they never hit session history. If this key may have been exposed, rotate it at the provider."
 
 ### Step 5 — Never Log or Print Keys
 
@@ -81,11 +116,32 @@ If the user pastes a raw key into chat without any context or warning, respond w
 - Never echo back the full value
 - Never include keys in tool call arguments that appear in logs
 
+### Step 6 — After exposure (incident checklist)
+
+If a real secret touched chat, disk, or CI logs:
+
+1. **Redact** Hermes storage (this skill).
+2. **Rotate** the credential at the provider; treat the old one as compromised if there was any realistic exposure.
+3. **Update** consumers (env, deployment secrets, local files).
+4. **Verify** old credential no longer works; optionally run `python3 scripts/redact_hermes.py --verify --secrets-file ...` in automation to fail CI if plaintext reappears.
+
+### Step 7 — Active session caveat
+
+The current session file may still receive plaintext until the session ends. **Re-run redaction after the session closes** or on a schedule. Pair with disk encryption and minimal retention for `~/.hermes` where possible.
+
 ---
 
-## Secrets Inventory
+## Defense in depth (outside this skill)
 
-Add new secrets here as they are discovered. The inventory lives in `SECRETS.md` (gitignored).
+- Pre-commit and CI secret scanning for repos; keep `.env*` out of git.
+- Short-lived tokens and workload identity instead of long-lived API keys.
+- Filesystem permissions on any file that lists `secret:placeholder` pairs (e.g. `chmod 600`).
+
+---
+
+## Secrets inventory
+
+Add **placeholder labels and notes only** — not live values. The inventory lives in `SECRETS.md` (gitignored).
 
 | Service | Redacted Form | Added |
 |---------|---------------|-------|
@@ -96,7 +152,8 @@ Add new secrets here as they are discovered. The inventory lives in `SECRETS.md`
 ## Pitfalls
 
 - **Do NOT** write plaintext keys to skill SKILL.md files — use `***REDACTED***` placeholders
-- **Do NOT** include keys in terminal command history — use env vars or prompt for them at runtime
-- **Do NOT** save keys to `.env` files in project repos — use `~/.env` outside of version control
-- If a skill needs a key at runtime, accept it as a parameter, not as a stored value
-- The agent's own memory is encrypted by the platform — keys stored there are safe; session/transcript files need manual redaction
+- **Do NOT** pass live secrets through shell history — prefer `--from-stdin` or `--secrets-file`
+- **Do NOT** include keys in terminal command history — use env vars or prompt at runtime
+- **Do NOT** save keys to `.env` files inside project repos — use ignored paths or OS keychain-backed tooling
+- If a skill needs a key at runtime, accept it via environment or parameters supplied outside chat, not as a stored value in the session
+- Regex detection is incomplete; when in doubt, treat ambiguous high-entropy strings as sensitive
