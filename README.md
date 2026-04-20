@@ -1,10 +1,10 @@
-# 🔒 secret-guardian
+# 🔒 cerberus
 
 > Automatically detect, redact, and safely handle API keys and other sensitive data in Hermes Agent — forever.
 
 **Problem:** When you share an API key with Hermes Agent, it gets embedded in session transcripts, history files, and database records in plaintext. If those files are ever compromised, your keys go with them.
 
-**Solution:** `secret-guardian` is a Hermes Agent skill that automatically intercepts any sensitive value you share, redacts it from disk immediately, and stores only a safe placeholder in agent memory.
+**Solution:** `cerberus` is a Hermes Agent skill that automatically intercepts any sensitive value you share, redacts it from disk immediately, and stores only a safe placeholder in agent memory.
 
 ---
 
@@ -24,8 +24,8 @@
 ### 1. Install the skill
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/secret-guardian.git
-cd secret-guardian
+git clone https://github.com/YOUR_USERNAME/cerberus.git
+cd cerberus
 bash scripts/setup.sh
 ```
 
@@ -35,7 +35,7 @@ That's it. The setup script detects your Hermes skills directory, copies the ski
 
 ### 2. Add your secrets to the inventory
 
-Edit `~/.hermes/skills/security/secret-guardian/SECRETS.md`:
+Edit `~/.hermes/skills/security/cerberus/SECRETS.md`:
 
 ```markdown
 | Service       | Redacted Placeholder               | Notes       |
@@ -49,7 +49,7 @@ Edit `~/.hermes/skills/security/secret-guardian/SECRETS.md`:
 ### 3. Redact existing plaintext secrets (one-time cleanup)
 
 ```bash
-python3 ~/.hermes/skills/security/secret-guardian/scripts/redact_hermes.py \
+python3 ~/.hermes/skills/security/cerberus/scripts/redact_hermes.py \
   --secrets "sk-1234567890abcdef:***OPENAI_KEY_REDACTED***,r8_abcdef123456:***REPLICATE_KEY_REDACTED***"
 ```
 
@@ -76,7 +76,7 @@ From now on, whenever you share a key or credential with Hermes Agent, the skill
 ## 📁 Repo Structure
 
 ```
-secret-guardian/
+cerberus/
 ├── SKILL.md                          # The Hermes Agent skill (what gets loaded)
 ├── scripts/
 │   ├── redact_hermes.py              # Core redaction CLI tool

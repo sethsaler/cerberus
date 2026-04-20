@@ -1,5 +1,5 @@
 ---
-name: secret-guardian
+name: cerberus
 description: Automatically detect, redact, and safely handle API keys, tokens, passwords, and other sensitive data shared by the user. Prevents plaintext secrets from ever being stored in session files, skills, or disk.
 category: security
 ---
@@ -56,7 +56,7 @@ Run the redaction script against all hermes storage locations:
 python3 scripts/redact_hermes.py --secrets "key1:value1,key2:value2,..."
 ```
 
-Known secrets can be found in `~/.hermes/skills/security/secret-guardian/SECRETS.md` (gitignored). The script replaces each plaintext value with `***{TYPE}_REDACTED***`.
+Known secrets can be found in `~/.hermes/skills/security/cerberus/SECRETS.md` (gitignored). The script replaces each plaintext value with `***{TYPE}_REDACTED***`.
 
 **Never leave the plaintext value in any file.**
 

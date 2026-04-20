@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# secret-guardian/setup.sh
+# cerberus/setup.sh
 # =============================================================================
-# One-command installer for the secret-guardian skill.
+# One-command installer for the cerberus skill.
 # Run this from the repo root:
 #   bash scripts/setup.sh
 #
@@ -20,7 +20,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILL_DIR="$REPO_DIR"
-SKILL_NAME="secret-guardian"
+SKILL_NAME="cerberus"
 SKILL_SUBDIR="security/$SKILL_NAME"
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ fi
 
 echo ""
 echo "============================================"
-ok "secret-guardian installed successfully!"
+ok "cerberus installed successfully!"
 echo "============================================"
 echo ""
 echo "  Skill location:  $TARGET_DIR"
