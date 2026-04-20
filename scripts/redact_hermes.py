@@ -4,7 +4,7 @@ redact_hermes.py — Redact known secrets from Hermes storage and optional paths
 
 Primary target: ~/.hermes (session JSON, history, state.db).
 
-Also supports extra directories (e.g. project .cerberus/), shell history files,
+Also supports extra directories (e.g. `.cerberus/` or `.env.local`), shell history files,
 and any explicit file path — use --dry-run first outside ~/.hermes.
 
 Usage:

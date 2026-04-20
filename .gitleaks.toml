@@ -1,0 +1,10 @@
+# Gitleaks: scan commits for accidental secret commits.
+# https://github.com/gitleaks/gitleaks
+#
+# Default rules are enabled; extend here only if you need allowlists.
+
+title = "cerberus gitleaks config"
+
+[extend]
+# Use the built-in rule set from gitleaks
+useDefault = true

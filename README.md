@@ -21,6 +21,10 @@
 - **SQLite-aware** — properly handles Hermes's `state.db` with backup-and-restore safety
 - **Zero false-positive noise** — uses full-value matching, not just pattern scanning
 - **Manual API key setup** — scaffold `.cerberus/env.local`, open it for the user, then seal with `env_to_pairs.py` + `redact_hermes.py` (see below)
+- **Extra scan roots** — `--extra-root` for project `.env.local` and other trees; `--skip-hermes` for non-Hermes-only cleanup
+- **Shell history (opt-in)** — `--include-shell-history` rewrites `~/.bash_history` / `~/.zsh_history` when needed (use `--dry-run` first)
+- **Session helper** — `scripts/session_hygiene.sh` wraps the redactor for post-session runs via `CERBERUS_PAIRS_FILE`
+- **Repo hygiene** — optional [pre-commit](https://pre-commit.com/) + [Gitleaks](https://github.com/gitleaks/gitleaks) (`.pre-commit-config.yaml`) and GitHub Actions workflow for accidental secret commits
 
 ---
 
@@ -107,6 +111,27 @@ python3 scripts/redact_hermes.py --audit \
 python3 scripts/redact_hermes.py --verify --secrets-file ./pairs.txt
 ```
 
+**Optional — redact a leaked value from a project directory** (does not touch Hermes):
+
+```bash
+python3 scripts/redact_hermes.py --skip-hermes --extra-root ./myapp --dry-run --secrets-file ./pairs.txt
+python3 scripts/redact_hermes.py --skip-hermes --extra-root ./myapp --secrets-file ./pairs.txt
+```
+
+**Optional — shell history** (destructive; audit first):
+
+```bash
+python3 scripts/redact_hermes.py --include-shell-history --audit --secrets-file ./pairs.txt
+python3 scripts/redact_hermes.py --include-shell-history --dry-run --secrets-file ./pairs.txt
+```
+
+**Optional — post-session wrapper** (expects `chmod 600` pairs file):
+
+```bash
+export CERBERUS_PAIRS_FILE="$HOME/.config/cerberus/pairs.txt"
+bash scripts/session_hygiene.sh --verify
+```
+
 ---
 
 ### 4. Done
@@ -131,12 +156,29 @@ cerberus/
 │   ├── redact_hermes.py              # Redact known values from Hermes + optional paths
 │   ├── setup_api_key_env.sh          # Scaffold .cerberus/env.local + gitignore + open editor
 │   ├── env_to_pairs.py               # Build pairs file from env (for redactor; chmod 600)
-│   ├── session_hygiene.sh            # Optional: CERBERUS_PAIRS_FILE + redact wrapper
+│   ├── session_hygiene.sh            # Wrapper: CERBERUS_PAIRS_FILE + redact + pass-through flags
 │   └── setup.sh                      # One-command installer into ~/.hermes/skills/...
+├── .github/workflows/gitleaks.yml    # CI: scan commits for leaked secrets
+├── .pre-commit-config.yaml           # Local pre-commit hook (Gitleaks)
+├── .gitleaks.toml                    # Extends default Gitleaks rules
 ├── README.md                         # This file
 ├── LICENSE                           # MIT
 └── .gitignore                        # SECRETS.md, .cerberus/
 ```
+
+---
+
+## 🔒 Git and CI (accidental commits)
+
+This repo ships optional **Gitleaks** integration so keys are less likely to land in git history:
+
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files
+```
+
+On GitHub, the **gitleaks** workflow runs on pushes and pull requests to `main`. If a real secret was ever pushed, **rotate it** at the provider; scanning does not remove history.
 
 ---
 
@@ -166,11 +208,20 @@ python3 redact_hermes.py --dry-run --secrets-file ./pairs.txt
 # Verify — exit 1 if any secret still present (CI / hooks)
 python3 redact_hermes.py --verify --secrets-file ./pairs.txt
 
+# If piping pairs on stdin, put --from-stdin before --verify (stdin is read once)
+printf '%s\n' 'sk-...:***R***' | python3 redact_hermes.py --from-stdin --verify --skip-hermes --extra-root ./myapp
+
 # Interactive entry
 python3 redact_hermes.py --interactive
 
 # Custom hermes directory
 python3 redact_hermes.py --hermes-dir /path/to/.hermes --from-stdin < pairs.txt
+
+# Scan only a project tree (no Hermes)
+python3 redact_hermes.py --skip-hermes --extra-root ./myapp --secrets-file ./pairs.txt
+
+# Include shell history files (use --dry-run / --audit first)
+python3 redact_hermes.py --include-shell-history --secrets-file ./pairs.txt
 ```
 
 ---

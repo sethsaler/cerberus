@@ -197,9 +197,7 @@ echo ""
 echo "  Skill location:  $TARGET_DIR"
 echo "  Secrets file:    $TARGET_DIR/SECRETS.md"
 echo "  Redact script:   $TARGET_DIR/scripts/redact_hermes.py"
-if [[ -f "$TARGET_DIR/scripts/session_hygiene.sh" ]]; then
-  echo "  Session helper:  $TARGET_DIR/scripts/session_hygiene.sh"
-fi
+echo "  Session helper:  $TARGET_DIR/scripts/session_hygiene.sh"
 echo "  API key setup:   $TARGET_DIR/scripts/setup_api_key_env.sh"
 echo "  Env → pairs:     $TARGET_DIR/scripts/env_to_pairs.py"
 echo ""
