@@ -1,0 +1,21 @@
+# Secrets inventory — never commit actual key values
+SECRETS.md
+
+# OS junk
+.DS_Store
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Editor
+.vscode/
+.idea/
+*.sublime-*
+
+# Backup files
+*.bak
+*.backup

@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# =============================================================================
+# secret-guardian/setup.sh
+# =============================================================================
+# One-command installer for the secret-guardian skill.
+# Run this from the repo root:
+#   bash scripts/setup.sh
+#
+# What it does:
+#   1. Finds your Hermes Agent skills directory (~/.hermes/skills by default)
+#   2. Prompts for the install path if non-standard
+#   3. Copies this skill into a gitignored subdirectory
+#   4. Creates SECRETS.md (gitignored) for the secrets inventory
+#   5. Prints a quick sanity check
+#
+# Requirements: bash 4+, cp, mkdir, echo, cat
+# =============================================================================
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SKILL_DIR="$REPO_DIR"
+SKILL_NAME="secret-guardian"
+SKILL_SUBDIR="security/$SKILL_NAME"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+info()  { echo "ℹ️   $*"; }
+warn()  { echo "⚠️   $*" >&2; }
+ok()    { echo "✅   $*"; }
+error() { echo "❌   $*" >&2; exit 1; }
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || error "Required command '$1' not found. Please install it first."
+}
+
+confirm() {
+  local prompt="${1:-Continue?}"
+  local reply
+  read -rp "$prompt [y/N] " reply || true
+  case "$reply" in
+    [yY]|[yY][eE][sS]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Step 0: prerequisites
+# ---------------------------------------------------------------------------
+
+need "bash"
+need "cp"
+need "mkdir"
+
+# ---------------------------------------------------------------------------
+# Step 1: detect hermes directory
+# ---------------------------------------------------------------------------
+
+HERMES_DIR="${HERMES_DIR:-}"
+if [[ -z "$HERMES_DIR" ]]; then
+  if [[ -d "$HOME/.hermes/skills" ]]; then
+    HERMES_DIR="$HOME/.hermes/skills"
+  elif [[ -d "$HOME/.hermes" ]]; then
+    HERMES_DIR="$HOME/.hermes/skills"
+    info "Detected Hermes dir: $HERMES_DIR"
+  else
+    read -rp "Enter your Hermes Agent skills directory: " HERMES_DIR
+    HERMES_DIR="${HERMES_DIR:-$HOME/.hermes/skills}"
+  fi
+fi
+
+# Resolve ~ and relative paths
+HERMES_DIR="$(eval echo "$HERMES_DIR")"
+
+if [[ ! -d "$HERMES_DIR" ]]; then
+  warn "Skills directory does not exist: $HERMES_DIR"
+  if confirm "Create it?"; then
+    mkdir -p "$HERMES_DIR"
+    ok "Created $HERMES_DIR"
+  else
+    error "Aborted."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 2: target install path
+# ---------------------------------------------------------------------------
+
+TARGET_DIR="$HERMES_DIR/$SKILL_SUBDIR"
+
+if [[ -d "$TARGET_DIR" ]]; then
+  warn "Skill already exists at $TARGET_DIR"
+  if confirm "Overwrite it?"; then
+    info "Removing existing installation..."
+    rm -rf "$TARGET_DIR"
+  else
+    error "Aborted. Remove the existing skill first if you want a fresh install."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 3: create gitignored subdirectory structure
+# ---------------------------------------------------------------------------
+
+info "Creating skill directory at $TARGET_DIR..."
+mkdir -p "$TARGET_DIR"
+
+# ---------------------------------------------------------------------------
+# Step 4: copy skill files (but NOT SECRETS.md if it exists in repo)
+# ---------------------------------------------------------------------------
+
+info "Copying SKILL.md..."
+cp "$SKILL_DIR/SKILL.md" "$TARGET_DIR/SKILL.md"
+
+info "Copying scripts..."
+mkdir -p "$TARGET_DIR/scripts"
+if [[ -f "$SKILL_DIR/scripts/redact_hermes.py" ]]; then
+  cp "$SKILL_DIR/scripts/redact_hermes.py" "$TARGET_DIR/scripts/redact_hermes.py"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5: create local SECRETS.md (gitignored, stores secret inventory)
+# ---------------------------------------------------------------------------
+
+if [[ ! -f "$TARGET_DIR/SECRETS.md" ]]; then
+  info "Creating SECRETS.md (gitignored — store your secrets inventory here)..."
+  cat > "$TARGET_DIR/SECRETS.md" << 'EOF'
+---
+# This file is .gitignored — it stores your secret inventory in plaintext
+# so the agent can reference it, while keeping real values out of version control.
+#
+# Format: one line per secret — the rest of the agent won't read this file.
+#
+# | Service       | Redacted Placeholder              | Notes        |
+# |---------------|------------------------------------|--------------|
+# | myservice.com | ***MYSERVICE_API_KEY_REDACTED***   | Added 2026-XX |
+#
+# IMPORTANT: Never commit actual secret values to version control.
+# Add secrets to this file using the redaction script or manually.
+#
+EOF
+  # Ensure it's .gitignored so the user's global gitignore covers it
+  # (we'll also add it to the repo's .gitignore below)
+fi
+
+# ---------------------------------------------------------------------------
+# Step 6: verify .gitignore covers SECRETS.md
+# ---------------------------------------------------------------------------
+
+if [[ -f "$REPO_DIR/.gitignore" ]]; then
+  if ! grep -qx "SECRETS.md" "$REPO_DIR/.gitignore"; then
+    info "Adding SECRETS.md to .gitignore..."
+    echo -e "\n# Secrets inventory (contains real values — never commit)" >> "$REPO_DIR/.gitignore"
+    echo "SECRETS.md" >> "$REPO_DIR/.gitignore"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 7: make redact script executable
+# ---------------------------------------------------------------------------
+
+if [[ -f "$TARGET_DIR/scripts/redact_hermes.py" ]]; then
+  chmod +x "$TARGET_DIR/scripts/redact_hermes.py"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 8: sanity check
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "============================================"
+ok "secret-guardian installed successfully!"
+echo "============================================"
+echo ""
+echo "  Skill location:  $TARGET_DIR"
+echo "  Secrets file:    $TARGET_DIR/SECRETS.md"
+echo "  Redact script:   $TARGET_DIR/scripts/redact_hermes.py"
+echo ""
+echo "Next steps:"
+echo "  1. Edit $TARGET_DIR/SECRETS.md to add your secrets"
+echo "     (one 'secret:placeholder' pair per line)"
+echo ""
+echo "  2. For immediate cleanup of existing plaintext secrets:"
+echo "     python3 $TARGET_DIR/scripts/redact_hermes.py \\"
+echo "       --secrets 'your-key-here:***YOUR_SERVICE_REDACTED***'"
+echo ""
+echo "  3. The skill loads automatically — Hermes will use it"
+echo "     whenever you share API keys or credentials."
+echo ""
