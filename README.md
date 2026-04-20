@@ -20,6 +20,32 @@
 - **Audit mode** — scan without modifying to see exactly where your secrets leaked
 - **SQLite-aware** — properly handles Hermes's `state.db` with backup-and-restore safety
 - **Zero false-positive noise** — uses full-value matching, not just pattern scanning
+- **Manual API key setup** — scaffold `.cerberus/env.local`, open it for the user, then seal with `env_to_pairs.py` + `redact_hermes.py` (see below)
+
+---
+
+## 🔑 Default: need an API key (no pasting in chat)
+
+Hermes agents should follow `SKILL.md` **Key intake protocol**. Short version:
+
+```bash
+# From the project that needs the key
+bash scripts/setup_api_key_env.sh --project . --var OPENAI_API_KEY
+# User replaces REPLACE_ME in .cerberus/env.local and saves
+
+python3 scripts/env_to_pairs.py --env-file .cerberus/env.local --pairs-out ~/.config/cerberus/pairs.txt
+python3 scripts/redact_hermes.py --secrets-file ~/.config/cerberus/pairs.txt --extra-root .
+```
+
+Then run tools with the file sourced (do not print the file):
+
+```bash
+set -a && source .cerberus/env.local && set +a && your-command
+```
+
+`env_to_pairs.py` exits **2** if every value is still `REPLACE_ME` (nothing to redact yet).
+
+`redact_hermes.py` **does not rewrite** `.cerberus/env.local` (so sourcing keeps working); it still scrubs those values elsewhere.
 
 ---
 
@@ -102,11 +128,14 @@ If a key may have been exposed, **rotate it at the provider** after redacting lo
 cerberus/
 ├── SKILL.md                          # The Hermes Agent skill (what gets loaded)
 ├── scripts/
-│   ├── redact_hermes.py              # Core redaction CLI tool
-│   └── setup.sh                      # One-command installer
+│   ├── redact_hermes.py              # Redact known values from Hermes + optional paths
+│   ├── setup_api_key_env.sh          # Scaffold .cerberus/env.local + gitignore + open editor
+│   ├── env_to_pairs.py               # Build pairs file from env (for redactor; chmod 600)
+│   ├── session_hygiene.sh            # Optional: CERBERUS_PAIRS_FILE + redact wrapper
+│   └── setup.sh                      # One-command installer into ~/.hermes/skills/...
 ├── README.md                         # This file
 ├── LICENSE                           # MIT
-└── .gitignore                        # Ignores SECRETS.md
+└── .gitignore                        # SECRETS.md, .cerberus/
 ```
 
 ---

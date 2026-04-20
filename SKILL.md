@@ -13,6 +13,40 @@ Load this skill **automatically** whenever the user shares any of the following:
 - Private keys (SSH, GPG, etc.)
 - Any string that matches a known secret pattern (see Patterns below)
 - Requests to "save", "store", or "remember" a credential
+- **You need an API key or other secret to proceed** (build, test, deploy, call an API)
+
+---
+
+## Key intake protocol (DEFAULT when an API key is needed)
+
+When the task requires a secret the agent does not already have, **do not ask the user to paste the key in chat** unless they insist. Default flow:
+
+1. **Scaffold** — Run the setup script from the **project root** (or pass `--project`):
+
+   ```bash
+   bash scripts/setup_api_key_env.sh --project . --var OPENAI_API_KEY
+   ```
+
+   Repeat `--var NAME` for each key (e.g. `--var ANTHROPIC_API_KEY`). This creates `.cerberus/env.local` with `NAME=REPLACE_ME`, sets **chmod 600** on the file and **chmod 700** on `.cerberus/`, and appends `.cerberus/` to the project **`.gitignore`** if present.
+
+2. **Open for manual entry** — The script opens the file in `$EDITOR`, or `cursor`, or `code` when available. If none apply, tell the user the path and ask them to open it locally. Use `--no-open` only in headless environments.
+
+3. **Wait** — Tell the user: replace each `REPLACE_ME` with their real key and save the file. **Do not** ask them to paste the value in the chat.
+
+4. **Seal (after they save)** — Build the redaction pairs file and scrub Hermes + project (never print secret values or `cat` the env file):
+
+   ```bash
+   python3 scripts/env_to_pairs.py --env-file .cerberus/env.local --pairs-out ~/.config/cerberus/pairs.txt
+   python3 scripts/redact_hermes.py --secrets-file ~/.config/cerberus/pairs.txt --extra-root .
+   ```
+
+   Point `--pairs-out` at a user-private path (chmod 600). If `env_to_pairs.py` exits **2** (no real values yet), remind the user to save real keys in `.cerberus/env.local` and re-run.
+
+   The redactor **skips** `.cerberus/env.local` so your on-disk key is not replaced by placeholders (you still need `chmod 600` and `.gitignore`). It **does** remove the same values from Hermes logs, session JSON, and other files under `--extra-root`.
+
+5. **Use the key without echoing it** — Load via the environment in later commands, e.g. `set -a && source .cerberus/env.local && set +a && your-command`, or export only the variable names your tooling needs. Never paste file contents into chat or tool args.
+
+6. **Ongoing** — Keep `CERBERUS_PAIRS_FILE` or the same pairs path for `session_hygiene.sh` after sessions. If the user **did** paste a key in chat, fall through to **Redact from Disk** below immediately.
 
 ---
 
@@ -30,9 +64,10 @@ Load this skill **automatically** whenever the user shares any of the following:
 
 ## Default stance (prefer this order)
 
-1. **No raw secrets in chat** — use env vars, `op run`, cloud IAM, or files outside the repo that tools read at runtime.
-2. **If a secret was pasted** — redact from Hermes storage immediately, then **rotate** the credential at the provider if exposure is plausible (see checklist below).
-3. **Inventory** — `SECRETS.md` should list **labels and placeholders only**, not live values. Never commit it.
+1. **Manual entry file first** — use **Key intake protocol** (`.cerberus/env.local` + `env_to_pairs.py` + `redact_hermes.py`) whenever you need a new API key.
+2. **No raw secrets in chat** — use env files, `op run`, cloud IAM, or files outside the repo that tools read at runtime.
+3. **If a secret was pasted** — redact from Hermes storage immediately, then **rotate** the credential at the provider if exposure is plausible (see checklist below).
+4. **Inventory** — `SECRETS.md` should list **labels and placeholders only**, not live values. Never commit it.
 
 ---
 
