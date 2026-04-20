@@ -1,40 +1,27 @@
 #!/usr/bin/env python3
 """
-redact_hermes.py — Redact secrets from Hermes Agent storage files.
+redact_hermes.py — Redact known secrets from Hermes storage and optional paths.
+
+Primary target: ~/.hermes (session JSON, history, state.db).
+
+Also supports extra directories (e.g. project .env.local), shell history files,
+and any explicit file path — use --dry-run first outside ~/.hermes.
 
 Usage:
     python3 redact_hermes.py --secrets "secret1:value1,secret2:value2,..."
-
-    Or with named pairs:
-    python3 redact_hermes.py \
-        --secret "openai:sk-...ABC" \
-        --secret "replicate:r8_...XYZ"
-
-    Interactive (will prompt for secrets):
-        python3 redact_hermes.py --interactive
 
     Recommended (avoids shell history / argv exposure):
         printf '%s\n' 'sk-abc...:***OPENAI_REDACTED***' | python3 redact_hermes.py --from-stdin
         python3 redact_hermes.py --secrets-file /path/to/pairs.txt
 
-    Audit mode (find secrets without modifying):
-        python3 redact_hermes.py --audit --secrets "..."
+    Scan only a project directory (Hermes unchanged):
+        python3 redact_hermes.py --skip-hermes --extra-root ./myapp --dry-run --from-stdin < pairs.txt
 
-    Verify mode (exit 1 if any secret still present — CI / post-session checks):
-        python3 redact_hermes.py --verify --secrets "..."
+    Include shell history (~/.bash_history, ~/.zsh_history if present):
+        python3 redact_hermes.py --include-shell-history --from-stdin < pairs.txt
 
-Examples:
-    # Single secret
-    python3 redact_hermes.py --secrets "sk-1234567890abcdef:***OPENAI_KEY_REDACTED***"
-
-    # Multiple secrets
-    python3 redact_hermes.py \
-        --secret "sk-...:***OPENAI_KEY_REDACTED***" \
-        --secret "r8_...:***REPLICATE_KEY_REDACTED***"
-
-    # Full cleanup of known secrets (add your own):
-    python3 redact_hermes.py \
-        --secret "YOUR_KEY_HERE:***YOUR_SERVICE_REDACTED***"
+    Verify (exit 1 if any secret still present):
+        python3 redact_hermes.py --verify --secrets-file pairs.txt
 """
 
 from __future__ import annotations
@@ -52,8 +39,55 @@ HERMES_DIR = os.path.expanduser("~/.hermes")
 
 
 # ---------------------------------------------------------------------------
+# Path collection
+# ---------------------------------------------------------------------------
+
+
+def default_shell_history_files() -> list[str]:
+    """Common shell history paths (only those that exist)."""
+    candidates = [
+        os.path.expanduser("~/.bash_history"),
+        os.path.expanduser("~/.zsh_history"),
+    ]
+    return [p for p in candidates if os.path.isfile(p)]
+
+
+def collect_files_under_roots(roots: list[str]) -> list[str]:
+    """
+    Expand roots into a list of file paths. Roots may be files or directories.
+    Skips .git directories when walking.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for raw in roots:
+        root = os.path.expanduser(os.path.normpath(raw))
+        if not os.path.exists(root):
+            continue
+
+        if os.path.isfile(root):
+            ap = os.path.abspath(root)
+            if ap not in seen:
+                seen.add(ap)
+                out.append(ap)
+            continue
+
+        for dirpath, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for fn in files:
+                fp = os.path.join(dirpath, fn)
+                ap = os.path.abspath(fp)
+                if ap not in seen:
+                    seen.add(ap)
+                    out.append(ap)
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Core redaction logic
 # ---------------------------------------------------------------------------
+
 
 def redact_file(
     path: str,
@@ -103,7 +137,7 @@ def redact_sqlite_db(
     """
     Redact secrets from a SQLite database (state.db).
     Backs up the DB before modifying, then walks every text column in every
-    table and replaces secret values. Handles the Hermes state.db schema.
+    table and replaces secret values.
     """
     if not os.path.exists(db_path):
         return 0
@@ -233,71 +267,65 @@ def _sqlite_redact_dry_run(db_path: str, secrets: dict[str, str], verbose: bool)
     return 1 if found else 0
 
 
-def audit_hermes(secrets: dict[str, str], hermes_dir: str = HERMES_DIR) -> dict:
+def redact_one_path(
+    fp: str,
+    secrets: dict[str, str],
+    dry_run: bool,
+) -> int:
+    """Apply redaction to a single file using the same rules as Hermes storage."""
+    fn = os.path.basename(fp)
+    if fn in (".hermes_history", "transcript.txt", "memory.json"):
+        return redact_file(fp, secrets, dry_run=dry_run)
+    if fn.endswith(".json") or fn.endswith(".jsonl"):
+        return redact_json_file(fp, secrets, dry_run=dry_run)
+    if fn == "state.db":
+        return redact_sqlite_db(fp, secrets, dry_run=dry_run)
+    return redact_file(fp, secrets, dry_run=dry_run)
+
+
+def audit_files(secrets: dict[str, str], file_paths: list[str]) -> dict[str, list[str]]:
     """
-    Scan hermes storage and report where secrets are found (without modifying anything).
+    Scan files and report where secrets are found (no modifications).
     Returns {path: [found_secrets_list]}.
     """
     findings: dict[str, list[str]] = {}
-    for root, dirs, files in os.walk(hermes_dir):
-        dirs[:] = [d for d in dirs if d != ".git"]
 
-        for fn in files:
-            fp = os.path.join(root, fn)
-            found_in_file: list[str] = []
+    for fp in file_paths:
+        found_in_file: list[str] = []
+        try:
+            if fp.endswith(".db"):
+                with open(fp, "rb") as f:
+                    content = f.read().decode("utf-8", errors="ignore")
+            else:
+                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
 
-            try:
-                if fn.endswith(".json"):
-                    with open(fp, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
-                elif fn.endswith(".db"):
-                    with open(fp, "rb") as f:
-                        content = f.read().decode("utf-8", errors="ignore")
-                else:
-                    with open(fp, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
+            for secret in secrets:
+                if len(secret) > 8 and secret in content:
+                    found_in_file.append(secret[:20] + "...")
 
-                for secret in secrets:
-                    if len(secret) > 8 and secret in content:
-                        found_in_file.append(secret[:20] + "...")
-
-                if found_in_file:
-                    findings[fp] = found_in_file
-
-            except (IOError, OSError, UnicodeDecodeError):
-                pass
+            if found_in_file:
+                findings[fp] = found_in_file
+        except (IOError, OSError, UnicodeDecodeError):
+            pass
 
     return findings
 
 
-def scan_and_redact(
+def scan_and_redact_paths(
     secrets: dict[str, str],
-    hermes_dir: str = HERMES_DIR,
+    file_paths: list[str],
     dry_run: bool = False,
 ) -> dict:
-    """Walk hermes_dir and redact secrets from all relevant files."""
+    """Redact secrets from each file path."""
     stats: dict = {"files_scanned": 0, "files_modified": 0, "errors": []}
 
-    for root, dirs, files in os.walk(hermes_dir):
-        dirs[:] = [d for d in dirs if d != ".git"]
-        for fn in files:
-            fp = os.path.join(root, fn)
-            stats["files_scanned"] += 1
-            try:
-                if fn in (".hermes_history", "transcript.txt", "memory.json"):
-                    stats["files_modified"] += redact_file(fp, secrets, dry_run=dry_run)
-                elif fn.endswith(".json") or fn.endswith(".jsonl"):
-                    stats["files_modified"] += redact_json_file(
-                        fp, secrets, dry_run=dry_run
-                    )
-                elif fn == "state.db":
-                    stats["files_modified"] += redact_sqlite_db(
-                        fp, secrets, dry_run=dry_run
-                    )
-                else:
-                    stats["files_modified"] += redact_file(fp, secrets, dry_run=dry_run)
-            except Exception as e:
-                stats["errors"].append(f"{fp}: {e}")
+    for fp in file_paths:
+        stats["files_scanned"] += 1
+        try:
+            stats["files_modified"] += redact_one_path(fp, secrets, dry_run=dry_run)
+        except Exception as e:
+            stats["errors"].append(f"{fp}: {e}")
 
     return stats
 
@@ -305,6 +333,7 @@ def scan_and_redact(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def parse_secrets_input(raw: str) -> dict[str, str]:
     """
@@ -360,9 +389,26 @@ def merge_secrets(base: dict[str, str], extra: dict[str, str]) -> None:
     base.update(extra)
 
 
+def build_scan_roots(
+    hermes_dir: str,
+    skip_hermes: bool,
+    extra_roots: list[str] | None,
+    include_shell_history: bool,
+) -> list[str]:
+    """Assemble list of roots (dirs or files) to scan."""
+    roots: list[str] = []
+    if not skip_hermes:
+        roots.append(hermes_dir)
+    if extra_roots:
+        roots.extend(extra_roots)
+    if include_shell_history:
+        roots.extend(default_shell_history_files())
+    return roots
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Redact secrets from Hermes Agent storage files.",
+        description="Redact secrets from Hermes storage and optional paths.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -415,7 +461,23 @@ def main() -> None:
     parser.add_argument(
         "--hermes-dir",
         default=HERMES_DIR,
-        help=f"Path to hermes directory (default: {HERMES_DIR})",
+        help=f"Path to Hermes data directory (default: {HERMES_DIR})",
+    )
+    parser.add_argument(
+        "--skip-hermes",
+        action="store_true",
+        help="Do not scan ~/.hermes (or --hermes-dir); only --extra-root paths are used",
+    )
+    parser.add_argument(
+        "--extra-root",
+        action="append",
+        metavar="PATH",
+        help="Additional file or directory to scan (repeatable). Use for .env.local, project dirs, etc.",
+    )
+    parser.add_argument(
+        "--include-shell-history",
+        action="store_true",
+        help="Include ~/.bash_history and ~/.zsh_history if they exist (destructive — prefer --dry-run first)",
     )
 
     args = parser.parse_args()
@@ -454,11 +516,33 @@ def main() -> None:
                 file=sys.stderr,
             )
 
+    roots = build_scan_roots(
+        args.hermes_dir,
+        args.skip_hermes,
+        args.extra_root,
+        args.include_shell_history,
+    )
+
+    if not roots:
+        print(
+            "Error: No scan roots. Remove --skip-hermes or add --extra-root / --include-shell-history.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    file_paths = collect_files_under_roots(roots)
+    root_summary = ", ".join(
+        r.replace(os.path.expanduser("~"), "~") for r in roots
+    )
+
     if args.verify:
-        print(f"\nVerifying {len(secrets)} secret(s) in {args.hermes_dir}...\n")
-        findings = audit_hermes(secrets, args.hermes_dir)
+        print(
+            f"\nVerifying {len(secrets)} secret(s) across {len(file_paths)} file(s)...\n"
+            f"  Roots: {root_summary}\n"
+        )
+        findings = audit_files(secrets, file_paths)
         if not findings:
-            print("  OK — no tracked secrets found in Hermes storage.")
+            print("  OK — no tracked secrets found.")
             sys.exit(0)
         for fp, found in findings.items():
             rel = fp.replace(os.path.expanduser("~"), "~")
@@ -469,8 +553,11 @@ def main() -> None:
         sys.exit(1)
 
     if args.audit:
-        print(f"\nScanning {len(secrets)} secret(s) in {args.hermes_dir}...\n")
-        findings = audit_hermes(secrets, args.hermes_dir)
+        print(
+            f"\nScanning {len(secrets)} secret(s) in {len(file_paths)} file(s)...\n"
+            f"  Roots: {root_summary}\n"
+        )
+        findings = audit_files(secrets, file_paths)
         if not findings:
             print("  No secrets found.")
         else:
@@ -484,13 +571,14 @@ def main() -> None:
 
     prefix = "[DRY-RUN] " if args.dry_run else ""
     print(
-        f"\n{prefix}Redacting {len(secrets)} secret(s) in {args.hermes_dir}...\n"
+        f"\n{prefix}Redacting {len(secrets)} secret(s) in {len(file_paths)} file(s)...\n"
+        f"  Roots: {root_summary}\n"
     )
 
     if args.dry_run:
         print("  (Dry run — no files will be modified)\n")
 
-    stats = scan_and_redact(secrets, args.hermes_dir, dry_run=args.dry_run)
+    stats = scan_and_redact_paths(secrets, file_paths, dry_run=args.dry_run)
 
     print(f"\n  {'Planned changes (dry run).' if args.dry_run else 'Done.'}")
     print(f"  Files scanned:  {stats['files_scanned']}")
