@@ -180,6 +180,9 @@ python3 redact_hermes.py --dry-run --secrets-file ./pairs.txt
 # Verify — exit 1 if any secret still present (CI / hooks)
 python3 redact_hermes.py --verify --secrets-file ./pairs.txt
 
+# If piping pairs on stdin, put --from-stdin before --verify (stdin is read once)
+printf '%s\n' 'sk-...:***R***' | python3 redact_hermes.py --from-stdin --verify --skip-hermes --extra-root ./myapp
+
 # Interactive entry
 python3 redact_hermes.py --interactive
 
