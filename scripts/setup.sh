@@ -123,6 +123,14 @@ if [[ -f "$SKILL_DIR/scripts/session_hygiene.sh" ]]; then
   cp "$SKILL_DIR/scripts/session_hygiene.sh" "$TARGET_DIR/scripts/session_hygiene.sh"
   chmod +x "$TARGET_DIR/scripts/session_hygiene.sh"
 fi
+if [[ -f "$SKILL_DIR/scripts/setup_api_key_env.sh" ]]; then
+  cp "$SKILL_DIR/scripts/setup_api_key_env.sh" "$TARGET_DIR/scripts/setup_api_key_env.sh"
+  chmod +x "$TARGET_DIR/scripts/setup_api_key_env.sh"
+fi
+if [[ -f "$SKILL_DIR/scripts/env_to_pairs.py" ]]; then
+  cp "$SKILL_DIR/scripts/env_to_pairs.py" "$TARGET_DIR/scripts/env_to_pairs.py"
+  chmod +x "$TARGET_DIR/scripts/env_to_pairs.py"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 5: create local SECRETS.md (gitignored, stores secret inventory)
@@ -170,6 +178,12 @@ fi
 if [[ -f "$TARGET_DIR/scripts/session_hygiene.sh" ]]; then
   chmod +x "$TARGET_DIR/scripts/session_hygiene.sh"
 fi
+if [[ -f "$TARGET_DIR/scripts/setup_api_key_env.sh" ]]; then
+  chmod +x "$TARGET_DIR/scripts/setup_api_key_env.sh"
+fi
+if [[ -f "$TARGET_DIR/scripts/env_to_pairs.py" ]]; then
+  chmod +x "$TARGET_DIR/scripts/env_to_pairs.py"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 8: sanity check
@@ -184,6 +198,8 @@ echo "  Skill location:  $TARGET_DIR"
 echo "  Secrets file:    $TARGET_DIR/SECRETS.md"
 echo "  Redact script:   $TARGET_DIR/scripts/redact_hermes.py"
 echo "  Session helper:  $TARGET_DIR/scripts/session_hygiene.sh"
+echo "  API key setup:   $TARGET_DIR/scripts/setup_api_key_env.sh"
+echo "  Env → pairs:     $TARGET_DIR/scripts/env_to_pairs.py"
 echo ""
 echo "Next steps:"
 echo "  1. Optional: edit $TARGET_DIR/SECRETS.md with placeholder labels only"

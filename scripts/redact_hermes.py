@@ -4,7 +4,7 @@ redact_hermes.py — Redact known secrets from Hermes storage and optional paths
 
 Primary target: ~/.hermes (session JSON, history, state.db).
 
-Also supports extra directories (e.g. project .env.local), shell history files,
+Also supports extra directories (e.g. `.cerberus/` or `.env.local`), shell history files,
 and any explicit file path — use --dry-run first outside ~/.hermes.
 
 Usage:
@@ -52,6 +52,12 @@ def default_shell_history_files() -> list[str]:
     return [p for p in candidates if os.path.isfile(p)]
 
 
+def _is_canonical_cerberus_env(path: str) -> bool:
+    """Do not redact the manual-entry env file — replacing values would break sourcing."""
+    norm = path.replace("\\", "/")
+    return "/.cerberus/env.local" in norm or norm.endswith(".cerberus/env.local")
+
+
 def collect_files_under_roots(roots: list[str]) -> list[str]:
     """
     Expand roots into a list of file paths. Roots may be files or directories.
@@ -67,6 +73,8 @@ def collect_files_under_roots(roots: list[str]) -> list[str]:
 
         if os.path.isfile(root):
             ap = os.path.abspath(root)
+            if _is_canonical_cerberus_env(ap):
+                continue
             if ap not in seen:
                 seen.add(ap)
                 out.append(ap)
@@ -77,6 +85,8 @@ def collect_files_under_roots(roots: list[str]) -> list[str]:
             for fn in files:
                 fp = os.path.join(dirpath, fn)
                 ap = os.path.abspath(fp)
+                if _is_canonical_cerberus_env(ap):
+                    continue
                 if ap not in seen:
                     seen.add(ap)
                     out.append(ap)

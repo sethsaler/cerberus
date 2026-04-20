@@ -1,6 +1,9 @@
 # Secrets inventory — never commit actual key values
 SECRETS.md
 
+# Cerberus local env (manual API key entry — never commit)
+.cerberus/
+
 # OS junk
 .DS_Store
 *.swp
