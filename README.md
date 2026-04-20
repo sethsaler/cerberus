@@ -6,13 +6,17 @@
 
 **Solution:** `cerberus` is a Hermes Agent skill that automatically intercepts any sensitive value you share, redacts it from disk immediately, and stores only a safe placeholder in agent memory.
 
+**Limits:** Redaction cleans the primary Hermes storage paths; it does not prove a secret never existed in backups, sync, or logs. If a real key may have leaked, **rotate it at the provider** — see Threat model in `SKILL.md`.
+
 ---
 
 ## ✨ Features
 
 - **Automatic detection** — regex patterns for OpenAI, Anthropic, Replicate, AgentMail, GLM, SSH keys, and more
 - **Immediate redaction** — secrets are purged from `.hermes_history`, session JSON files, and `state.db` within seconds of being shared
-- **Memory-only storage** — real key values stay in encrypted agent memory, never on disk
+- **Safer CLI inputs** — `--from-stdin` and `--secrets-file` avoid putting live secrets in argv/shell history
+- **Dry-run** — preview changes without writing
+- **Verify mode** — exit non-zero if secrets still appear (CI / post-session checks)
 - **Audit mode** — scan without modifying to see exactly where your secrets leaked
 - **SQLite-aware** — properly handles Hermes's `state.db` with backup-and-restore safety
 - **Zero false-positive noise** — uses full-value matching, not just pattern scanning
@@ -29,11 +33,11 @@ cd cerberus
 bash scripts/setup.sh
 ```
 
-That's it. The setup script detects your Hermes skills directory, copies the skill in, and creates a `SECRETS.md` for your inventory.
+That's it. The setup script detects your Hermes skills directory, copies the skill in, and creates a `SECRETS.md` for your inventory (placeholders only — not live secrets).
 
 ---
 
-### 2. Add your secrets to the inventory
+### 2. Track placeholders in the inventory (optional)
 
 Edit `~/.hermes/skills/security/cerberus/SECRETS.md`:
 
@@ -44,13 +48,24 @@ Edit `~/.hermes/skills/security/cerberus/SECRETS.md`:
 | My Service    | ***MYSERVICE_KEY_REDACTED***       | Added 2026-04-19 |
 ```
 
+Do **not** store live secret values in this file — only labels and placeholders.
+
 ---
 
 ### 3. Redact existing plaintext secrets (one-time cleanup)
 
+**Recommended** — pipe pairs or use a file so secrets are not visible in `ps` / shell history:
+
 ```bash
-python3 ~/.hermes/skills/security/cerberus/scripts/redact_hermes.py \
-  --secrets "sk-1234567890abcdef:***OPENAI_KEY_REDACTED***,r8_abcdef123456:***REPLICATE_KEY_REDACTED***"
+printf '%s\n' 'sk-1234567890abcdef:***OPENAI_KEY_REDACTED***' 'r8_abcdef123456:***REPLICATE_KEY_REDACTED***' \
+  | python3 ~/.hermes/skills/security/cerberus/scripts/redact_hermes.py --from-stdin
+```
+
+Or:
+
+```bash
+chmod 600 ./pairs.txt   # one secret:placeholder per line
+python3 ~/.hermes/skills/security/cerberus/scripts/redact_hermes.py --secrets-file ./pairs.txt
 ```
 
 Or use **audit mode** first to see exactly where your secrets are before touching anything:
@@ -60,6 +75,12 @@ python3 scripts/redact_hermes.py --audit \
   --secrets "sk-1234567890abcdef:***OPENAI_KEY_REDACTED***"
 ```
 
+**After a session ends**, re-run redaction (the active session file may still contain plaintext until it is closed). Use `--verify` in scripts to fail if anything remains:
+
+```bash
+python3 scripts/redact_hermes.py --verify --secrets-file ./pairs.txt
+```
+
 ---
 
 ### 4. Done
@@ -67,9 +88,11 @@ python3 scripts/redact_hermes.py --audit \
 From now on, whenever you share a key or credential with Hermes Agent, the skill:
 
 1. Detects it automatically
-2. Redacts it from all hermes storage files
-3. Stores only a `***SERVICE_KEY_REDACTED***` placeholder in memory
+2. Redacts it from all Hermes storage files (prefer stdin/file for the redactor CLI)
+3. Stores only metadata and placeholders — **not** the real value in memory
 4. Shows you only the last 4 characters when confirming receipt
+
+If a key may have been exposed, **rotate it at the provider** after redacting locally.
 
 ---
 
@@ -91,10 +114,16 @@ cerberus/
 ## 🔧 CLI Reference
 
 ```bash
-# Basic redaction
+# Recommended: stdin (no secrets in argv)
+printf '%s\n' 'sk-ABC:***OPENAI_REDACTED***' | python3 redact_hermes.py --from-stdin
+
+# Recommended: secrets file (chmod 600)
+python3 redact_hermes.py --secrets-file ./pairs.txt
+
+# Basic redaction (less ideal — secret visible in process list)
 python3 redact_hermes.py --secrets "secret:placeholder"
 
-# Multiple secrets
+# Multiple secrets via repeated flags
 python3 redact_hermes.py \
   --secret "sk-ABC123:***OPENAI_REDACTED***" \
   --secret "r8_XYZ789:***REPLICATE_REDACTED***"
@@ -102,14 +131,17 @@ python3 redact_hermes.py \
 # Audit mode (find without modifying)
 python3 redact_hermes.py --audit --secrets "sk-ABC123:***REDACTED***"
 
-# Dry run
-python3 redact_hermes.py --dry-run --secrets "sk-ABC123:***REDACTED***"
+# Dry run (preview without writing)
+python3 redact_hermes.py --dry-run --secrets-file ./pairs.txt
+
+# Verify — exit 1 if any secret still present (CI / hooks)
+python3 redact_hermes.py --verify --secrets-file ./pairs.txt
 
 # Interactive entry
 python3 redact_hermes.py --interactive
 
 # Custom hermes directory
-python3 redact_hermes.py --hermes-dir /path/to/.hermes --secrets "..."
+python3 redact_hermes.py --hermes-dir /path/to/.hermes --from-stdin < pairs.txt
 ```
 
 ---
@@ -137,7 +169,7 @@ You can add custom patterns in `SKILL.md` under `SENSITIVE_PATTERNS`.
 
 The **current active session file** (`session_YYYYMMDD_*.json`) is written in real-time as the conversation happens. Secrets mentioned in tool calls or reasoning during the current session will appear in it until the session resets. This is a fundamental architectural constraint — the skill redacts as fast as possible, but can't retroactively clean a file that's still being actively appended to.
 
-**Fix:** Simply re-run the redaction script after a session reset.
+**Mitigation:** Re-run the redaction script after the session ends. Use `--verify` in automation to catch stragglers.
 
 ---
 

@@ -128,17 +128,16 @@ if [[ ! -f "$TARGET_DIR/SECRETS.md" ]]; then
   info "Creating SECRETS.md (gitignored — store your secrets inventory here)..."
   cat > "$TARGET_DIR/SECRETS.md" << 'EOF'
 ---
-# This file is .gitignored — it stores your secret inventory in plaintext
-# so the agent can reference it, while keeping real values out of version control.
-#
-# Format: one line per secret — the rest of the agent won't read this file.
+# This file is .gitignored — use it for labels and placeholders only.
+# Do NOT store live secret values here (or anywhere the agent can sync to git).
 #
 # | Service       | Redacted Placeholder              | Notes        |
 # |---------------|------------------------------------|--------------|
 # | myservice.com | ***MYSERVICE_API_KEY_REDACTED***   | Added 2026-XX |
 #
-# IMPORTANT: Never commit actual secret values to version control.
-# Add secrets to this file using the redaction script or manually.
+# To redact a leaked value from Hermes storage, prefer piping pairs into the script
+# so secrets never appear in shell history or `ps`:
+#   printf '%s\n' 'sk-...:***OPENAI_REDACTED***' | python3 scripts/redact_hermes.py --from-stdin
 #
 EOF
   # Ensure it's .gitignored so the user's global gitignore covers it
@@ -179,13 +178,14 @@ echo "  Secrets file:    $TARGET_DIR/SECRETS.md"
 echo "  Redact script:   $TARGET_DIR/scripts/redact_hermes.py"
 echo ""
 echo "Next steps:"
-echo "  1. Edit $TARGET_DIR/SECRETS.md to add your secrets"
-echo "     (one 'secret:placeholder' pair per line)"
+echo "  1. Optional: edit $TARGET_DIR/SECRETS.md with placeholder labels only"
+echo "     (never store live secrets in that file)"
 echo ""
-echo "  2. For immediate cleanup of existing plaintext secrets:"
-echo "     python3 $TARGET_DIR/scripts/redact_hermes.py \\"
-echo "       --secrets 'your-key-here:***YOUR_SERVICE_REDACTED***'"
+echo "  2. To clean plaintext from Hermes storage, prefer stdin or a chmod 600 file:"
+echo "     printf '%s\\n' 'YOUR_KEY:***YOUR_SERVICE_REDACTED***' | \\"
+echo "       python3 $TARGET_DIR/scripts/redact_hermes.py --from-stdin"
 echo ""
-echo "  3. The skill loads automatically — Hermes will use it"
-echo "     whenever you share API keys or credentials."
+echo "  3. After a session ends, re-run redaction; use --verify in CI if needed."
+echo ""
+echo "  4. The skill loads automatically — Hermes will use it when you share credentials."
 echo ""
