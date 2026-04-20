@@ -193,3 +193,4 @@ Add **placeholder labels and notes only** — not live values. The inventory liv
 - **Do NOT** save keys to `.env` files inside project repos — use ignored paths or OS keychain-backed tooling
 - If a skill needs a key at runtime, accept it via environment or parameters supplied outside chat, not as a stored value in the session
 - Regex detection is incomplete; when in doubt, treat ambiguous high-entropy strings as sensitive
+- When piping pairs into the redactor, put **`--from-stdin` before `--verify`** — stdin can only be read once
